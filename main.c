@@ -1,5 +1,6 @@
 #include "opcodes.h"
-#include <stdint.h>
+#include "trap_codes.h"
+#include <sadint.h>
 
 /* allowing negative numbers */
 uint16_t sign_extend(uint16_t x, int bit_count) {
@@ -85,10 +86,9 @@ int main(int argc, char* argv[]) {
 				update_flags(r0);
 				break;
 		
-			case OP_BR;
+			case OP_BR:
 				// 0000 nzp PCoffset9
-				uint16_t pc_offset = sign_extend((instr & 1FFF), 9);			
-	
+				uint16_t pc_offset = sign_extend((instr & 0x1FF), 9);			
 				uint16_t n = (instr >> 11) & 0x1;
 				uint16_t z = (instr >> 10) & 0x1;
 				uint16_t p = (instr >> 11) & 0x1;
@@ -96,14 +96,37 @@ int main(int argc, char* argv[]) {
 					reg[R_PC] = mem_read(mem_read(R_PC) + pc_offset);	
 				}
 				break;
-			case OP_JMP;
+			case OP_JMP:
+				// 1100	000	BaseR	000000
+				uint16_t base_r = (instr >> 6) & 0x7; 
+				reg[R_PC] = reg[base_r];
 				break;
 			
-			case OP_JSR;
+			case OP_JSR:
+				// JSR
+				// 0100	1	PCoffset11
+				bool mode = instr >> 11 & 0x1;
+				if (mode) {	
+					uint16_t pc_offset = sign_extend((instr & 0x7FF), 11);
+					reg[R_PC] += pc_offset;
+
+				}
+				// JSSR
+				// 0100 0	00	BaseR	000000
+				else {
+					uint16_t base_r = (instr >> 6) & 0x7;
+					reg[R_PC] = reg[base_r];
+				}
+					
 				break;
-			case OP_LD;
+			case OP_LD:
+				// 0010	DR	PCoffset9
+				uint16_t pc_offset = sign_extend((instr & 0x1FF), 9);
+				uint16_t dr = (instr >> 9) & 0x7;
+				reg[dr] = mem_read(reg[R_PC] + pc_offset);
+				update_flags(dr);
 				break;
-			case OP_LDI;
+			case OP_LDI:
 				// ENCODING (Big Endian)
 				// 1010 DR PCoffset9
 				uint16_t r0 = instr >> 9 & 0x7;
@@ -112,19 +135,100 @@ int main(int argc, char* argv[]) {
 				reg[r0] = mem_read(mem_read(reg[R_PC]) + pc_offset));
 				update_flags(r0);
 				break;
-			case OP_LDR;
+			case OP_LDR:
+				// 0110	DR	BaseR	offset6
+				uint16_t offset = sign_extend((instr & 0x3F, 6);
+				uint16_t base_r = (instr >> 6) & 0x7;
+				uint16_t dr = (instr >> 9) & 0x7;
+				reg[dr] = mem_read(reg[base_r] + offset)
+				update_flags(dr);
 				break;
 		
-			case OP_LEA;
+			case OP_LEA:
+				// 1110	DR	PCOffset9
+				uint16_t pc_offset = sign_extend((instr & 0x1FF, 9);
+				uint16_t dr = (instr >> 9) & 0x7;
+				reg[dr] = reg[R_PC] + pc_offset;
+				update_flags(dr);
 				break;
-			case OP_ST;
+			case OP_ST:
+				// 0011	SR	PCOffset9
+				uint16_t pc_offset = sign_extend((instr & 0x1FF, 9);
+				uint16_t sr = (instr >> 9) &0x7;
+				// write to memory address
+				mem_write(reg[R_PC] + pc_offset,  reg[sr]);
 				break;
 			
-			case OP_STI;
+			case OP_STI:
+				// 1011 SR	PCOffset9
+				uint16_t pc_offset = sign_extend((instr & 0x1FF), 9);
+				uint16_t sr = (instr >> 9) &0x7;
+				mem_write(mem_read(reg[R_PC] + pc_offset), reg[sr]);
 				break;
-			case OP_STR;
+			case OP_STR:
+				// 0111	SR	BaseR	offset6
+				uint16_t offset = sign_extend((instr & 0x3F), 6);
+				uint16_t base_r = (instr >> 6) & 0x7;
+				uint16_t sr = (instr >> 9) & 0x7;
+				mem_write(reg[base_r] + offset, reg[sr]); 
 				break;
-			case OP_TRAP;
+			case OP_TRAP:
+				// 1111 0000	trapvect8
+				uint16_t trapvect8 = (instr >> 8) & 0xFF;
+				reg[R_R7] = reg[R_PC];
+				switch (trapvect8) {
+					case TRAP_GETC:
+						/* read a single ASCII char */
+						reg[R_R0] = (uint16_t)getchar();
+						update_flags(R_R0);
+						break;
+					case TRAP_OUT:
+						putc((char)reg[R_R0], stdout);
+						fflush(stdout);
+						break;
+					case TRAP_PUTS:
+						/* one char per word */
+						uint16_t* c = memory + reg[R_R0];
+						while(*c) {
+							putc((char)*c, stdout);
+							++c;
+						}
+						fflush(stdout);
+						break;
+					case TRAP_IN:
+// Print a prompt on the screen & read a single character from the keyboard.
+// The character is echoed on the console, and ascii copied to R0
+// High 8 bits of R0 are cleared
+						printf("Enter single character: ");
+						char c = getchar();
+						putc(c, stdout);
+						reg[R_R0] = (uint16_t)c;
+						fflush(stdout);
+						update_flags(R_R0);
+						break;
+					case TRAP_PUTSP:
+// cout << ASCII string << endl
+// 2 characters per memory location, start at R0
+// ASCII code in bits [7:0] written in memory first
+// " bits [15 : 8] to console
+						uint16_t* c = memory + reg[R_R0];
+						while (*c) {
+							char char1 = (*c) & 0xFF;
+						 	putc(char1, stdout);
+							char char2 = (*c) >> 8;
+							if (char2) 
+								putc(char2, stdout);
+							++c;
+						}
+						fflush(stdout);
+						break;
+					case TRAP_HALT:
+						// Halt program and print message in console
+						puts("HALT");
+						fflush(stdout);
+						running = 0;
+						break;
+				}
 				break;
 			case OP_RES;
 				break;
